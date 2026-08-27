@@ -328,13 +328,65 @@ class AutoWebpImageManager extends Plugin {
 
     if (matchedImages.length === 0) return;
 
+    // 按图片在笔记中出现的顺序重新编号
+    let noteContent = "";
+    try {
+      noteContent = await this.app.vault.read(file);
+    } catch (e) {
+      noteContent = "";
+    }
+
+    // 按出现顺序提取图片序号（去重，保留第一次出现的位置）
+    const contentPattern = new RegExp(escapeRegex(cleanOld) + "-image-(\\d+)\\.webp", "g");
+    const imageOrder = [];
+    const seenIndexes = new Set();
+    let cm;
+    while ((cm = contentPattern.exec(noteContent)) !== null) {
+      const idx = cm[1];
+      if (!seenIndexes.has(idx)) {
+        seenIndexes.add(idx);
+        imageOrder.push(idx);
+      }
+    }
+
+    // 建立旧序号 -> 新序号的映射（按笔记中出现顺序）
+    const indexMap = {};
+    imageOrder.forEach((oldIdx, i) => {
+      indexMap[oldIdx] = padIndex(i + 1, this.settings.indexDigits);
+    });
+
+    console.log("[Auto WebP] 图片出现顺序:", imageOrder.join(", "), "-> 重新编号为 01~" + padIndex(imageOrder.length, this.settings.indexDigits));
+
     // 收集重命名映射（旧名 -> 新名），跳过目标已存在的
     const renameMap = [];
+
+    // 先处理笔记中引用的图片（按出现顺序重新编号）
     for (const imgFile of matchedImages) {
       const match = imgFile.name.match(pattern);
       if (!match) continue;
-      const index = match[1];
-      const newFileName = cleanNew + "-image-" + index + ".webp";
+      const oldIndex = match[1];
+      if (!seenIndexes.has(oldIndex)) continue; // 孤立图片后面处理
+      const newIndex = indexMap[oldIndex];
+      const newFileName = cleanNew + "-image-" + newIndex + ".webp";
+      const newPath = imgFile.parent.path + "/" + newFileName;
+
+      const targetExists = this.app.vault.getAbstractFileByPath(newPath);
+      if (targetExists) {
+        console.warn("[Auto WebP] 目标文件已存在，跳过:", newPath);
+        continue;
+      }
+      renameMap.push({ imgFile, oldName: imgFile.name, newName: newFileName, newPath });
+    }
+
+    // 再处理笔记中没有引用的孤立图片（排在最后）
+    let orphanIndex = imageOrder.length + 1;
+    for (const imgFile of matchedImages) {
+      const match = imgFile.name.match(pattern);
+      if (!match) continue;
+      const oldIndex = match[1];
+      if (seenIndexes.has(oldIndex)) continue; // 已处理过
+      const newIndex = padIndex(orphanIndex++, this.settings.indexDigits);
+      const newFileName = cleanNew + "-image-" + newIndex + ".webp";
       const newPath = imgFile.parent.path + "/" + newFileName;
 
       const targetExists = this.app.vault.getAbstractFileByPath(newPath);
