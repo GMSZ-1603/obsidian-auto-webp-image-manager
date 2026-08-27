@@ -12,6 +12,8 @@ An Obsidian plugin that automatically converts pasted/dragged images to WebP for
 - **Auto Naming**: Images are named as `note-name-image-01.webp`, `note-name-image-02.webp`, etc.
 - **Custom Folder**: All images are saved to a configurable folder (default `images/`)
 - **Sync Rename**: When a note is renamed, all associated images and their references across the entire vault are automatically renamed
+- **Reorder by Appearance**: On note rename, image indices are reassigned based on their order of appearance in the note
+- **Skip Shared Images**: Images referenced by other notes are skipped during rename (default), preventing naming inconsistencies in other notes
 - **Link Format**: Supports both Wikilink `![[name.webp]]` and Markdown `![](path/name.webp)`
 
 ## Installation
@@ -41,7 +43,7 @@ An Obsidian plugin that automatically converts pasted/dragged images to WebP for
 1. In a note, press `Ctrl+V` to paste a screenshot or image, or drag an image into the editor
 2. The image is automatically saved to `images/note-name-image-01.webp`
 3. An image link is automatically inserted into the note
-4. When you rename the note file, all associated images are automatically renamed and all references across the vault are updated
+4. When you rename the note file, associated images are automatically renamed and all references across the vault are updated
 
 ## Configuration
 
@@ -59,17 +61,55 @@ Go to Settings → Community plugins → Auto WebP Image Manager → gear icon.
 | Handle paste | on | Process images on Ctrl+V |
 | Handle drop | on | Process images on drag-and-drop |
 | Sync rename on note rename | on | Auto-rename images when note is renamed |
+| Rename shared images | off | When off (recommended), images referenced by other notes are not renamed. When on, all images are renamed regardless of references. |
 
-## Naming Example
+## Naming and Reorder Example
 
 Note name: `Project Proposal.md`
-- Image 1: `images/Project Proposal-image-01.webp`
-- Image 2: `images/Project Proposal-image-02.webp`
 
-After renaming the note to `Updated Proposal.md`:
-- `images/Updated Proposal-image-01.webp`
-- `images/Updated Proposal-image-02.webp`
+Images in the note (in order of appearance):
+- 1st image: `images/Project Proposal-image-02.webp`
+- 2nd image: `images/Project Proposal-image-01.webp`
+- 3rd image: `images/Project Proposal-image-03.webp`
+
+After renaming the note to `Updated Proposal.md`, indices are reassigned by appearance order:
+- 1st image → `images/Updated Proposal-image-01.webp` (was 02)
+- 2nd image → `images/Updated Proposal-image-02.webp` (was 01)
+- 3rd image → `images/Updated Proposal-image-03.webp` (was 03)
 - All references in the note (and any other notes referencing these images) are automatically updated
+
+## Shared Image Behavior
+
+When an image is referenced by multiple notes, renaming one note will **not** rename that image (default behavior). This prevents the image name from becoming inconsistent with the other note's name.
+
+| Scenario | Behavior |
+|----------|----------|
+| Image only referenced by the renamed note | Renamed normally, indices reassigned by appearance |
+| Image also referenced by other notes | Skipped, keeps original name, other notes unaffected |
+
+To always rename shared images, enable "Rename shared images" in settings.
+
+## Changelog
+
+### v1.0.3
+- **New**: Skip renaming images that are referenced by other notes (default), with a setting toggle to force rename
+- **Fix**: Improved handling of shared images to prevent naming inconsistencies across notes
+
+### v1.0.2
+- **New**: On note rename, image indices are now reassigned based on their order of appearance in the note
+- **New**: Orphan images (not referenced in the note) are appended at the end of the sequence
+
+### v1.0.1
+- **Fix**: Manifest description now ends with English punctuation for review compliance
+
+### v1.0.0
+- Initial release
+- Auto convert pasted/dragged images to WebP
+- Configurable quality and resize
+- Note-based auto naming with sequence numbers
+- Custom image folder
+- Sync rename images on note rename with vault-wide reference updates
+- Wikilink and Markdown link format support
 
 ## Notes
 
@@ -95,6 +135,8 @@ MIT
 - **自动命名**：`笔记名-image-01.webp`、`笔记名-image-02.webp`...
 - **指定文件夹**：图片统一保存到指定文件夹（默认 `images/`）
 - **同步重命名**：笔记改名时，关联图片及全库引用自动更新
+- **按出现顺序重编号**：笔记重命名时，图片序号按在笔记中出现的顺序重新分配
+- **跳过共享图片**：被其他笔记引用的图片默认不重命名，避免其他笔记图片名不一致
 - **链接格式**：支持 Wikilink `![[名.webp]]` 和 Markdown `![](路径/名.webp)`
 
 ### 安装
@@ -109,3 +151,30 @@ MIT
 2. 图片自动保存到 `images/笔记名-image-01.webp`
 3. 笔记中自动插入图片链接
 4. 修改笔记文件名时，关联的图片及全库引用自动同步改名
+
+### 共享图片行为
+
+当一张图片被多篇笔记引用时，重命名其中一篇笔记**不会**重命名这张图片（默认行为），避免图片名与其他笔记名不一致。
+
+| 场景 | 行为 |
+|------|------|
+| 图片仅被当前笔记引用 | 正常重命名，按出现顺序重新编号 |
+| 图片也被其他笔记引用 | 跳过，保持原名，其他笔记不受影响 |
+
+如需始终重命名共享图片，可在设置中开启"重命名被其他笔记引用的共享图片"。
+
+### 更新日志
+
+**v1.0.3**
+- 新增：被其他笔记引用的共享图片默认不重命名，可通过设置开关强制重命名
+- 修复：改进共享图片处理，避免跨笔记命名不一致
+
+**v1.0.2**
+- 新增：笔记重命名时，图片序号按在笔记中出现的顺序重新分配
+- 新增：笔记中未引用的孤立图片排在序号末尾
+
+**v1.0.1**
+- 修复：manifest 描述以英文标点结尾，符合审核规范
+
+**v1.0.0**
+- 初始版本
