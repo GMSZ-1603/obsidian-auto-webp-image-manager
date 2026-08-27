@@ -16,6 +16,7 @@ const DEFAULT_SETTINGS = {
   maxHeight: 1080,
   linkFormat: "wikilink",
   renameImagesOnNoteRename: true,
+  renameSharedImages: false,
   handleDrop: true,
   handlePaste: true,
   specialCharacters: "#^[]|*\\:<>?/",
@@ -328,6 +329,28 @@ class AutoWebpImageManager extends Plugin {
 
     if (matchedImages.length === 0) return;
 
+    // 检测哪些图片被其他笔记引用（共享图片），默认跳过重命名
+    const sharedImageNames = new Set();
+    if (!this.settings.renameSharedImages) {
+      const allMdFilesForCheck = this.app.vault.getFiles().filter((f) => f.extension === "md");
+      for (const mdFile of allMdFilesForCheck) {
+        if (mdFile.path === file.path) continue; // 跳过当前笔记
+        try {
+          const content = await this.app.vault.read(mdFile);
+          for (const imgFile of matchedImages) {
+            if (content.includes(imgFile.name)) {
+              sharedImageNames.add(imgFile.name);
+            }
+          }
+        } catch (e) {
+          // 跳过无法读取的文件
+        }
+      }
+      if (sharedImageNames.size > 0) {
+        console.log("[Auto WebP] 检测到", sharedImageNames.size, "张被其他笔记引用的共享图片，跳过重命名:", Array.from(sharedImageNames).join(", "));
+      }
+    }
+
     // 按图片在笔记中出现的顺序重新编号
     let noteContent = "";
     try {
@@ -366,6 +389,7 @@ class AutoWebpImageManager extends Plugin {
       if (!match) continue;
       const oldIndex = match[1];
       if (!seenIndexes.has(oldIndex)) continue; // 孤立图片后面处理
+      if (!this.settings.renameSharedImages && sharedImageNames.has(imgFile.name)) continue; // 共享图片跳过重命名
       const newIndex = indexMap[oldIndex];
       const newFileName = cleanNew + "-image-" + newIndex + ".webp";
       const newPath = imgFile.parent.path + "/" + newFileName;
@@ -385,6 +409,7 @@ class AutoWebpImageManager extends Plugin {
       if (!match) continue;
       const oldIndex = match[1];
       if (seenIndexes.has(oldIndex)) continue; // 已处理过
+      if (!this.settings.renameSharedImages && sharedImageNames.has(imgFile.name)) continue; // 共享图片跳过重命名
       const newIndex = padIndex(orphanIndex++, this.settings.indexDigits);
       const newFileName = cleanNew + "-image-" + newIndex + ".webp";
       const newPath = imgFile.parent.path + "/" + newFileName;
@@ -642,6 +667,16 @@ class AutoWebpSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.renameImagesOnNoteRename).onChange(async (value) => {
           this.plugin.settings.renameImagesOnNoteRename = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("重命名被其他笔记引用的共享图片")
+      .setDesc("关闭时（推荐）：图片被其他笔记引用时不重命名，避免其他笔记图片名与笔记名不一致。开启时：一律重命名，所有引用同步更新。")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.renameSharedImages).onChange(async (value) => {
+          this.plugin.settings.renameSharedImages = value;
           await this.plugin.saveSettings();
         })
       );
