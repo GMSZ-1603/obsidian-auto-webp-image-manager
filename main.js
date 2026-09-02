@@ -79,6 +79,15 @@ class AutoWebpImageManager extends Plugin {
       })
     );
 
+    // 注册命令：重命名当前笔记中的图片
+    this.addCommand({
+      id: "rename-images-in-note",
+      name: "重命名当前笔记中的图片（按笔记名-image-序号格式）",
+      callback: () => {
+        this.renameImagesInCurrentNote();
+      }
+    });
+
     console.log("[Auto WebP Image Manager] loaded");
   }
 
@@ -483,7 +492,200 @@ class AutoWebpImageManager extends Plugin {
 
     new Notice("已同步重命名 " + renameMap.length + " 张图片，更新 " + updatedCount + " 篇笔记");
   }
+
+  // ============================================================
+  // 命令：重命名当前笔记中的图片（按笔记名-image-序号格式）
+  // ============================================================
+  async renameImagesInCurrentNote() {
+    const noteFile = this.app.workspace.getActiveFile();
+    if (!noteFile || noteFile.extension !== "md") {
+      new Notice("请先打开一个笔记文件");
+      return;
+    }
+
+    const noteName = noteFile.basename;
+    const cleanNoteName = sanitizeFileName(noteName, this.settings);
+    const folderPath = this.settings.imageFolder || "";
+
+    // 1. 读取笔记内容
+    let noteContent;
+    try {
+      noteContent = await this.app.vault.read(noteFile);
+    } catch (e) {
+      new Notice("无法读取笔记内容");
+      return;
+    }
+
+    // 2. 提取所有图片链接（支持 wikilink 和 markdown 格式）
+    const imageLinks = this.extractImageLinks(noteContent);
+
+    if (imageLinks.length === 0) {
+      new Notice("当前笔记中没有找到图片链接");
+      return;
+    }
+
+    // 3. 去重（同一张图片可能被多次引用），保持出现顺序
+    const uniqueImages = [];
+    const seen = new Set();
+    for (const link of imageLinks) {
+      if (!seen.has(link.path)) {
+        seen.add(link.path);
+        uniqueImages.push(link);
+      }
+    }
+
+    // 4. 检查每个图片文件是否存在（支持完整路径和wikilink文件名解析）
+    const validImages = [];
+    for (const img of uniqueImages) {
+      let file = this.app.vault.getAbstractFileByPath(img.path);
+      if (!file) {
+        file = this.app.metadataCache.getFirstLinkpathDest(img.path, noteFile.path);
+      }
+      if (file && file instanceof TFile) {
+        validImages.push({ ...img, file });
+      } else {
+        console.log("[Auto WebP] 图片文件不存在，跳过:", img.path);
+      }
+    }
+
+    if (validImages.length === 0) {
+      new Notice("没有找到有效的本地图片文件");
+      return;
+    }
+
+    // 5. 确保目标文件夹存在
+    await this.ensureFolder(folderPath);
+
+    // 6. 生成处理计划（重命名或转换为webp）
+    const renamePlan = [];
+    let index = 1;
+
+    for (const img of validImages) {
+      const num = padIndex(index++, this.settings.indexDigits);
+      const newFileName = cleanNoteName + "-image-" + num + ".webp";
+      const newPath = folderPath ? folderPath + "/" + newFileName : newFileName;
+
+      // 检查目标文件是否已存在
+      const targetExists = this.app.vault.getAbstractFileByPath(newPath);
+      if (targetExists) {
+        console.log("[Auto WebP] 目标文件已存在，跳过:", newPath);
+        continue;
+      }
+
+      renamePlan.push({
+        oldFile: img.file,
+        oldPath: img.file.path,
+        oldName: img.file.name,
+        newFileName,
+        newPath,
+        isWebp: img.file.extension === "webp"
+      });
+    }
+
+    if (renamePlan.length === 0) {
+      new Notice("没有需要处理的图片（目标文件名可能已存在）");
+      return;
+    }
+
+    // 7. 扫描全库，找出所有引用这些图片的笔记
+    const oldNames = renamePlan.map((r) => r.oldName);
+    const allMdFiles = this.app.vault.getFiles().filter((f) => f.extension === "md");
+    const affectedFiles = [];
+
+    for (const mdFile of allMdFiles) {
+      try {
+        const content = await this.app.vault.read(mdFile);
+        for (const oldName of oldNames) {
+          if (content.includes(oldName)) {
+            affectedFiles.push(mdFile);
+            break;
+          }
+        }
+      } catch (e) {
+        // 跳过无法读取的文件
+      }
+    }
+
+    console.log("[Auto WebP] 找到", affectedFiles.length, "篇引用这些图片的笔记");
+
+    // 8. 执行处理：webp直接重命名，非webp转换后保存
+    for (const item of renamePlan) {
+      try {
+        if (item.isWebp) {
+          // 已经是webp，直接重命名
+          await this.app.vault.rename(item.oldFile, item.newPath);
+        } else {
+          // 非webp，转换为webp后保存
+          const arrayBuffer = await this.app.vault.readBinary(item.oldFile);
+          const blob = new Blob([arrayBuffer]);
+          const webpBuffer = await this.convertToWebp(blob);
+          await this.app.vault.createBinary(item.newPath, webpBuffer);
+          // 原文件保留，不删除（避免其他笔记引用断裂）
+          console.log("[Auto WebP] 已转换为webp:", item.oldName, "->", item.newFileName);
+        }
+      } catch (err) {
+        console.error("[Auto WebP] 图片处理失败:", item.oldPath, err);
+      }
+    }
+
+    // 等待Obsidian完成自动链接更新
+    await new Promise((r) => setTimeout(r, 300));
+
+    // 9. 更新所有受影响笔记中的链接
+    let updatedCount = 0;
+    for (const mdFile of affectedFiles) {
+      try {
+        await this.app.vault.process(mdFile, (content) => {
+          let newContent = content;
+          let changed = false;
+          for (const item of renamePlan) {
+            if (newContent.includes(item.oldName)) {
+              newContent = newContent.split(item.oldName).join(item.newFileName);
+              changed = true;
+            }
+          }
+          if (changed) updatedCount++;
+          return changed ? newContent : content;
+        });
+      } catch (err) {
+        console.error("[Auto WebP] 更新笔记链接失败:", mdFile.path, err);
+      }
+    }
+
+    new Notice("已处理 " + renamePlan.length + " 张图片，更新 " + updatedCount + " 篇笔记");
+    console.log("[Auto WebP] 批量重命名完成:", renamePlan.length, "张图片");
+  }
+
+  // ============================================================
+  // 辅助：从笔记内容中提取所有图片链接
+  // ============================================================
+  extractImageLinks(content) {
+    const links = [];
+
+    // 匹配 wikilink 格式: ![[path]] 或 ![[path|alias]]
+    const wikilinkRegex = /!\[\[([^\]|]+)(?:\|[^\]]*)?\]\]/g;
+    let match;
+    while ((match = wikilinkRegex.exec(content)) !== null) {
+      const path = match[1].trim();
+      links.push({ path, type: "wikilink", raw: match[0] });
+    }
+
+    // 匹配 markdown 格式: ![alt](path)
+    const markdownRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
+    while ((match = markdownRegex.exec(content)) !== null) {
+      let path = match[2].trim();
+      try {
+        path = decodeURIComponent(path);
+      } catch (e) {
+        // 保持原样
+      }
+      links.push({ path, type: "markdown", raw: match[0] });
+    }
+
+    return links;
+  }
 }
+
 
 // ============================================================
 // 设置面板
