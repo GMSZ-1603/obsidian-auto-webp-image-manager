@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const { Plugin, Setting, Notice, TFile, TFolder, PluginSettingTab } = require("obsidian");
 
@@ -299,7 +299,7 @@ class AutoWebpImageManager extends Plugin {
     }
 
     // 在光标位置插入，后面加换行
-    editor.replaceSelection(linkText + "\n");
+    editor.replaceSelection(linkText);
   }
 
   // ============================================================
