@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 
 const { Plugin, Setting, Notice, TFile, TFolder, PluginSettingTab } = require("obsidian");
 
@@ -298,7 +298,7 @@ class AutoWebpImageManager extends Plugin {
       linkText = "![[" + imageFile.name + "]]";
     }
 
-    // 在光标位置插入图片链接（不自动换行，保持当前缩进格式）
+    // 在光标位置插入，后面加换行
     editor.replaceSelection(linkText);
   }
 
@@ -695,5 +695,3 @@ class AutoWebpSettingTab extends PluginSettingTab {
 }
 
 module.exports = AutoWebpImageManager;
-
-/* nosourcemap */
