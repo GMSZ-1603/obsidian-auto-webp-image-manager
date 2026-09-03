@@ -1,8 +1,8 @@
 # Auto WebP Image Manager
 
-Automatically convert pasted/dragged images to WebP format, save them to a custom folder with note-based naming, and sync image renames when notes are renamed.
+Automatically convert pasted/dragged images to WebP format, save them to a custom folder with note-based naming, sync image renames when notes are renamed, batch rename images across all notes, and scan for unused/duplicate images.
 
-自动将粘贴/拖拽的图片转换为 WebP 格式，按笔记名称自动命名保存到指定文件夹，并在笔记重命名时同步更新图片名称及全库引用。
+自动将粘贴/拖拽的图片转换为 WebP 格式，按笔记名称自动命名保存到指定文件夹，笔记重命名时同步更新图片名称及全库引用，支持批量重命名所有笔记图片，并可扫描未使用和重复的图片。
 
 ## Features / 功能特性
 
@@ -20,6 +20,14 @@ Automatically convert pasted/dragged images to WebP format, save them to a custo
 - **共享图片保护**：被其他笔记引用的图片默认跳过重命名，避免破坏其他笔记的链接。
 - **Sequential Reindexing**: On note rename, image indices are reassigned based on their order of appearance in the note.
 - **按出现顺序重新编号**：笔记重命名时，图片序号按在笔记中出现的先后顺序重新分配。
+- **Rename Images in Current Note**: Command to rename all images in the current note to the standard naming format, converting non-WebP images to WebP automatically.
+- **重命名当前笔记图片**：命令将当前笔记中的所有图片重命名为标准格式，非 WebP 图片自动转换为 WebP。
+- **Batch Rename All Notes**: Command to batch process all notes in the vault, renaming images to the standard format, skipping already-formatted images.
+- **批量重命名所有笔记**：命令批量处理库中所有笔记，将图片重命名为标准格式，跳过已符合规范的图片。
+- **Scan Unused & Duplicate Images**: Command to scan for images not referenced by any note, and duplicate images with identical content. Interactive modal lets you select and delete with one click (moved to system recycle bin).
+- **扫描未使用和重复图片**：命令扫描未被任何笔记引用的图片，以及内容完全相同的重复图片。交互式弹窗可勾选并一键删除（移到系统回收站）。
+- **Auto-update Links on Duplicate Deletion**: When deleting a duplicate image, all notes referencing it are automatically updated to reference the kept duplicate.
+- **删除重复图片时自动更新引用**：删除重复图片时，所有引用它的笔记自动更新为引用保留的那张图片。
 
 ## Installation / 安装
 
@@ -45,6 +53,8 @@ Automatically convert pasted/dragged images to WebP format, save them to a custo
 
 ## Usage / 使用方法
 
+### Basic Usage / 基本使用
+
 1. Open any note in Obsidian
 2. Paste an image with `Ctrl+V` (or drag an image file into the editor)
 3. The image is automatically converted to WebP, saved to your image folder, and a link is inserted
@@ -53,6 +63,18 @@ Automatically convert pasted/dragged images to WebP format, save them to a custo
 6. 用 `Ctrl+V` 粘贴图片（或将图片文件拖入编辑器）
 7. 图片会自动转换为 WebP，保存到图片文件夹，并插入链接
 8. 重命名图片：只需重命名笔记，所有关联图片会自动重命名
+
+### Commands / 命令
+
+Open the command palette with `Ctrl+P` and search for:
+
+按 `Ctrl+P` 打开命令面板，搜索：
+
+| Command / 命令 | Description / 说明 |
+|---|---|
+| **重命名当前笔记中的图片** | Rename all images in the current note to `{note-name}-image-{index}.webp` format. Non-WebP images are converted to WebP, original files are moved to recycle bin. / 将当前笔记中的所有图片重命名为标准格式，非 WebP 自动转换，原文件移到回收站。 |
+| **批量重命名所有笔记中的图片** | Batch process all notes in the vault. Already-formatted images are skipped. Progress shown every 10 notes. / 批量处理库中所有笔记，已符合规范的图片跳过，每处理10篇显示进度。 |
+| **扫描未使用和重复的图片** | Scan for images not referenced by any note and duplicate images with identical content. Interactive modal for review and one-click deletion. / 扫描未被引用的图片和内容重复的图片，交互式弹窗可勾选并一键删除。 |
 
 ## Configuration / 配置
 
@@ -94,7 +116,48 @@ When a note is renamed, the plugin checks each image:
 - 如果图片**还被其他笔记引用**，则默认**跳过**，避免破坏其他笔记中的链接。
 - 你可以在设置中启用"重命名共享图片"来强制重命名所有图片，但这可能会破坏其他笔记中的图片链接。
 
+## Image Scanner / 图片扫描工具
+
+The scan command provides two categories:
+
+扫描命令提供两个分类：
+
+### Unused Images / 未使用的图片
+- Images that exist in the vault but are not referenced by any markdown note.
+- 存在于库中但未被任何 markdown 笔记引用的图片。
+- Use "Select All" / "Deselect All" buttons for quick selection. / 使用"全选"/"取消全选"按钮快速选择。
+
+### Duplicate Images / 重复的图片
+- Groups of images with identical file content (verified by size + content hash).
+- 内容完全相同的图片组（通过文件大小 + 内容哈希验证）。
+- The first image in each group is marked as "Keep" and cannot be deleted. / 每组第一张标记为"保留"，不可删除。
+- When deleting a duplicate, all notes referencing it are automatically updated to reference the kept image. / 删除重复图片时，所有引用它的笔记自动更新为引用保留的图片。
+
+### Deletion / 删除
+- Selected images are moved to the **system recycle bin** (safe, recoverable). / 选中的图片移到**系统回收站**（安全，可恢复）。
+- A summary notice shows how many images were deleted and how many links were updated. / 完成后显示删除数量和更新的引用数量。
+
 ## Changelog / 更新日志
+
+### v1.0.9
+- Feature: Add image scanner to find unused and duplicate images with interactive deletion modal
+- Feature: Auto-update image links to kept duplicate when deleting duplicates
+- 功能：新增图片扫描工具，可查找未使用和重复的图片，交互式弹窗勾选删除
+- 功能：删除重复图片时，引用链接自动更新为保留的图片
+
+### v1.0.8
+- Feature: Add batch command to rename images in all notes, skip already-formatted images
+- 功能：新增批量重命名所有笔记图片命令，跳过已符合规范的图片
+
+### v1.0.7
+- Fix: Update image links with correct path after renaming (images moved to image folder)
+- Fix: Delete original non-WebP files after conversion (moved to recycle bin)
+- 修复：重命名后图片链接路径正确更新（图片移到图片文件夹）
+- 修复：非 WebP 图片转换后删除原文件（移到回收站）
+
+### v1.0.6
+- Feature: Add command to rename all images in current note to standard naming format
+- 功能：新增命令，将当前笔记中的所有图片重命名为标准命名格式
 
 ### v1.0.5
 - Fix: Remove BOM from plugin files for Obsidian compatibility
