@@ -1089,27 +1089,78 @@ class ImageScanModal extends Modal {
       return;
     }
 
-    const confirmMsg = `确定要删除选中的 ${this.selectedForDelete.size} 张图片吗？\n（将移到系统回收站，可恢复）`;
-    // 简单确认：直接执行
+    // 构建重复组映射：图片路径 -> 同组的其他图片
+    const dupGroupMap = {};
+    for (const group of this.duplicateGroups) {
+      for (const img of group) {
+        dupGroupMap[img.path] = group;
+      }
+    }
+
     let deleted = 0;
     let failed = 0;
+    let linksUpdated = 0;
 
     for (const path of this.selectedForDelete) {
       try {
         const file = this.app.vault.getAbstractFileByPath(path);
-        if (file) {
-          await this.app.vault.trash(file, true); // 移到系统回收站
-          deleted++;
+        if (!file) continue;
+
+        // 如果是重复组中的图片，先更新引用为同组保留的图片
+        const group = dupGroupMap[path];
+        if (group && group.length > 1) {
+          // 找到同组中未被删除的图片（保留的那张）
+          const keepImage = group.find((img) =>
+            img.path !== path && !this.selectedForDelete.has(img.path)
+          );
+
+          if (keepImage) {
+            // 扫描所有笔记，更新引用
+            const allMdFiles = this.app.vault.getFiles().filter((f) => f.extension === "md");
+            for (const mdFile of allMdFiles) {
+              try {
+                const content = await this.app.vault.read(mdFile);
+                if (content.includes(file.name) || content.includes(file.path)) {
+                  await this.app.vault.process(mdFile, (c) => {
+                    let newContent = c;
+                    let changed = false;
+                    // 替换 wikilink 中的文件名
+                    if (newContent.includes(file.name)) {
+                      newContent = newContent.split(file.name).join(keepImage.name);
+                      changed = true;
+                    }
+                    // 替换 markdown 链接中的路径
+                    if (newContent.includes(file.path)) {
+                      newContent = newContent.split(file.path).join(keepImage.path);
+                      changed = true;
+                    }
+                    if (changed) linksUpdated++;
+                    return changed ? newContent : c;
+                  });
+                }
+              } catch (e) {
+                // 跳过
+              }
+            }
+          }
         }
+
+        // 删除图片（移到系统回收站）
+        await this.app.vault.trash(file, true);
+        deleted++;
       } catch (err) {
         console.error("[Auto WebP] 删除图片失败:", path, err);
         failed++;
       }
     }
 
-    new Notice(`已删除 ${deleted} 张图片${failed > 0 ? "，" + failed + " 张失败" : ""}`);
+    let msg = `已删除 ${deleted} 张图片`;
+    if (linksUpdated > 0) msg += `，更新 ${linksUpdated} 处引用`;
+    if (failed > 0) msg += `，${failed} 张失败`;
+    new Notice(msg);
     this.close();
   }
+
 
   onClose() {
     this.contentEl.empty();
