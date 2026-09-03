@@ -88,6 +88,15 @@ class AutoWebpImageManager extends Plugin {
       }
     });
 
+    // 注册命令：批量重命名所有笔记中的图片
+    this.addCommand({
+      id: "rename-all-notes-images",
+      name: "批量重命名所有笔记中的图片",
+      callback: () => {
+        this.renameAllNotesImages();
+      }
+    });
+
     console.log("[Auto WebP Image Manager] loaded");
   }
 
@@ -502,6 +511,78 @@ class AutoWebpImageManager extends Plugin {
       new Notice("请先打开一个笔记文件");
       return;
     }
+    const result = await this.processNoteImages(noteFile);
+    if (result.processed > 0) {
+      let msg = "已处理 " + result.processed + " 张图片，更新 " + result.updatedNotes + " 篇笔记";
+      if (result.deleted > 0) msg += "，删除 " + result.deleted + " 个原文件";
+      new Notice(msg);
+    } else if (result.skipped > 0) {
+      new Notice("没有需要处理的图片（已符合命名规范或目标已存在）");
+    } else {
+      new Notice("当前笔记中没有找到图片链接");
+    }
+  }
+
+  // ============================================================
+  // 命令：批量重命名所有笔记中的图片
+  // ============================================================
+  async renameAllNotesImages() {
+    const allMdFiles = this.app.vault.getFiles().filter((f) => f.extension === "md");
+    if (allMdFiles.length === 0) {
+      new Notice("库中没有找到笔记文件");
+      return;
+    }
+
+    const confirmMsg = "将对库中 " + allMdFiles.length + " 篇笔记执行图片批量重命名，是否继续？";
+    // 简单确认：直接执行，用户可以通过通知看到进度
+    new Notice("开始批量处理 " + allMdFiles.length + " 篇笔记...");
+
+    let totalProcessed = 0;
+    let totalUpdatedNotes = 0;
+    let totalDeleted = 0;
+    let notesWithImages = 0;
+    let failedNotes = 0;
+    const failedList = [];
+
+    for (let i = 0; i < allMdFiles.length; i++) {
+      const mdFile = allMdFiles[i];
+      try {
+        const result = await this.processNoteImages(mdFile);
+        if (result.processed > 0) {
+          notesWithImages++;
+          totalProcessed += result.processed;
+          totalUpdatedNotes += result.updatedNotes;
+          totalDeleted += result.deleted;
+        }
+      } catch (err) {
+        failedNotes++;
+        failedList.push(mdFile.path);
+        console.error("[Auto WebP] 批量处理失败:", mdFile.path, err);
+      }
+
+      // 每处理10篇显示一次进度
+      if ((i + 1) % 10 === 0 || i === allMdFiles.length - 1) {
+        new Notice("批量处理进度: " + (i + 1) + "/" + allMdFiles.length);
+      }
+    }
+
+    let summary = "批量处理完成！共 " + allMdFiles.length + " 篇笔记，" +
+      notesWithImages + " 篇包含图片，处理 " + totalProcessed + " 张图片";
+    if (totalDeleted > 0) summary += "，删除 " + totalDeleted + " 个原文件";
+    if (failedNotes > 0) {
+      summary += "，" + failedNotes + " 篇处理失败";
+      console.log("[Auto WebP] 处理失败的笔记:", failedList.join(", "));
+    }
+    new Notice(summary);
+    console.log("[Auto WebP] 批量处理总结:", { totalNotes: allMdFiles.length, notesWithImages, totalProcessed, totalUpdatedNotes, totalDeleted, failedNotes });
+  }
+
+  // ============================================================
+  // 通用：处理单个笔记中的图片重命名，返回统计结果
+  // ============================================================
+  async processNoteImages(noteFile) {
+    const result = { processed: 0, updatedNotes: 0, deleted: 0, skipped: 0 };
+    if (!noteFile || noteFile.extension !== "md") return result;
 
     const noteName = noteFile.basename;
     const cleanNoteName = sanitizeFileName(noteName, this.settings);
@@ -512,19 +593,14 @@ class AutoWebpImageManager extends Plugin {
     try {
       noteContent = await this.app.vault.read(noteFile);
     } catch (e) {
-      new Notice("无法读取笔记内容");
-      return;
+      return result;
     }
 
-    // 2. 提取所有图片链接（支持 wikilink 和 markdown 格式）
+    // 2. 提取所有图片链接
     const imageLinks = this.extractImageLinks(noteContent);
+    if (imageLinks.length === 0) return result;
 
-    if (imageLinks.length === 0) {
-      new Notice("当前笔记中没有找到图片链接");
-      return;
-    }
-
-    // 3. 去重（同一张图片可能被多次引用），保持出现顺序
+    // 3. 去重
     const uniqueImages = [];
     const seen = new Set();
     for (const link of imageLinks) {
@@ -534,7 +610,7 @@ class AutoWebpImageManager extends Plugin {
       }
     }
 
-    // 4. 检查每个图片文件是否存在（支持完整路径和wikilink文件名解析）
+    // 4. 检查文件是否存在
     const validImages = [];
     for (const img of uniqueImages) {
       let file = this.app.vault.getAbstractFileByPath(img.path);
@@ -542,21 +618,22 @@ class AutoWebpImageManager extends Plugin {
         file = this.app.metadataCache.getFirstLinkpathDest(img.path, noteFile.path);
       }
       if (file && file instanceof TFile) {
+        // 跳过已经符合命名规范的图片（笔记名-image-序号.webp）
+        const expectedPattern = new RegExp("^" + escapeRegex(cleanNoteName) + "-image-\\d+\\.webp$");
+        if (expectedPattern.test(file.name)) {
+          result.skipped++;
+          continue;
+        }
         validImages.push({ ...img, file });
-      } else {
-        console.log("[Auto WebP] 图片文件不存在，跳过:", img.path);
       }
     }
 
-    if (validImages.length === 0) {
-      new Notice("没有找到有效的本地图片文件");
-      return;
-    }
+    if (validImages.length === 0) return result;
 
     // 5. 确保目标文件夹存在
     await this.ensureFolder(folderPath);
 
-    // 6. 生成处理计划（重命名或转换为webp）
+    // 6. 生成处理计划
     const renamePlan = [];
     let index = 1;
 
@@ -565,10 +642,9 @@ class AutoWebpImageManager extends Plugin {
       const newFileName = cleanNoteName + "-image-" + num + ".webp";
       const newPath = folderPath ? folderPath + "/" + newFileName : newFileName;
 
-      // 检查目标文件是否已存在
       const targetExists = this.app.vault.getAbstractFileByPath(newPath);
       if (targetExists) {
-        console.log("[Auto WebP] 目标文件已存在，跳过:", newPath);
+        result.skipped++;
         continue;
       }
 
@@ -582,12 +658,9 @@ class AutoWebpImageManager extends Plugin {
       });
     }
 
-    if (renamePlan.length === 0) {
-      new Notice("没有需要处理的图片（目标文件名可能已存在）");
-      return;
-    }
+    if (renamePlan.length === 0) return result;
 
-    // 7. 扫描全库，找出所有引用这些图片的笔记
+    // 7. 扫描全库受影响的笔记
     const oldNames = renamePlan.map((r) => r.oldName);
     const allMdFiles = this.app.vault.getFiles().filter((f) => f.extension === "md");
     const affectedFiles = [];
@@ -602,58 +675,51 @@ class AutoWebpImageManager extends Plugin {
           }
         }
       } catch (e) {
-        // 跳过无法读取的文件
+        // 跳过
       }
     }
 
-    console.log("[Auto WebP] 找到", affectedFiles.length, "篇引用这些图片的笔记");
-
-    // 8. 执行处理：webp直接重命名，非webp转换后保存
-    const newFileMap = {}; // oldName -> new TFile
+    // 8. 执行处理
+    const newFileMap = {};
     for (const item of renamePlan) {
       try {
         if (item.isWebp) {
-          // 已经是webp，直接重命名（Obsidian会自动更新wikilink引用）
           await this.app.vault.rename(item.oldFile, item.newPath);
           const newFile = this.app.vault.getAbstractFileByPath(item.newPath);
           if (newFile) newFileMap[item.oldName] = newFile;
         } else {
-          // 非webp，转换为webp后保存
           const arrayBuffer = await this.app.vault.readBinary(item.oldFile);
           const blob = new Blob([arrayBuffer]);
           const webpBuffer = await this.convertToWebp(blob);
           const newFile = await this.app.vault.createBinary(item.newPath, webpBuffer);
           newFileMap[item.oldName] = newFile;
-          console.log("[Auto WebP] 已转换为webp:", item.oldName, "->", item.newFileName);
         }
+        result.processed++;
       } catch (err) {
         console.error("[Auto WebP] 图片处理失败:", item.oldPath, err);
       }
     }
 
-    // 等待Obsidian完成自动链接更新
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 300));
 
-    // 9. 更新所有受影响笔记中的链接（替换完整链接，确保路径正确）
-    let updatedCount = 0;
+    // 9. 更新所有受影响笔记中的链接
     for (const mdFile of affectedFiles) {
       try {
         await this.app.vault.process(mdFile, (content) => {
           let newContent = content;
           let changed = false;
 
-          // 替换 wikilink 格式: ![[旧路径]] -> ![[新文件名.webp]]
           for (const item of renamePlan) {
             const newFile = newFileMap[item.oldName];
             if (!newFile) continue;
 
-            // 匹配 ![[旧路径或旧文件名]] （可能带别名）
-            const oldPathEscaped = escapeRegex(item.oldPath);
             const oldNameEscaped = escapeRegex(item.oldName);
+
+            // 替换 wikilink
             const wikilinkRegex = new RegExp("!\\[\\[[^\\]|]*?" + oldNameEscaped + "(?:\\|[^\\]]*)?\\]\\]", "g");
             newContent = newContent.replace(wikilinkRegex, "![[" + newFile.name + "]]");
 
-            // 匹配 markdown 格式: ![alt](旧路径) -> 生成正确的markdown链接
+            // 替换 markdown
             const markdownRegex = new RegExp("!\\[([^\\]]*)\\]\\([^)]*?" + oldNameEscaped + "\\)", "g");
             newContent = newContent.replace(markdownRegex, (match, alt) => {
               return "!" + this.app.fileManager.generateMarkdownLink(newFile, mdFile.path, alt);
@@ -662,7 +728,7 @@ class AutoWebpImageManager extends Plugin {
             changed = true;
           }
 
-          if (changed) updatedCount++;
+          if (changed) result.updatedNotes++;
           return changed ? newContent : content;
         });
       } catch (err) {
@@ -670,28 +736,21 @@ class AutoWebpImageManager extends Plugin {
       }
     }
 
-    // 10. 删除非webp的原文件（转换成功且所有引用已更新后）
-    let deletedCount = 0;
+    // 10. 删除非webp原文件
     for (const item of renamePlan) {
       if (!item.isWebp && newFileMap[item.oldName]) {
         try {
-          await this.app.vault.trash(item.oldFile, true); // 移到系统回收站
-          deletedCount++;
-          console.log("[Auto WebP] 已删除原文件:", item.oldPath);
+          await this.app.vault.trash(item.oldFile, true);
+          result.deleted++;
         } catch (err) {
           console.error("[Auto WebP] 删除原文件失败:", item.oldPath, err);
         }
       }
     }
 
-    const msg = "已处理 " + renamePlan.length + " 张图片，更新 " + updatedCount + " 篇笔记";
-    if (deletedCount > 0) {
-      new Notice(msg + "，删除 " + deletedCount + " 个原文件");
-    } else {
-      new Notice(msg);
-    }
-    console.log("[Auto WebP] 批量重命名完成:", renamePlan.length, "张图片");
+    return result;
   }
+
 
   // ============================================================
   // 辅助：从笔记内容中提取所有图片链接
