@@ -1,6 +1,6 @@
 "use strict";
 
-const { Plugin, Setting, Notice, TFile, TFolder, PluginSettingTab } = require("obsidian");
+const { Plugin, Setting, Notice, TFile, TFolder, PluginSettingTab, Modal } = require("obsidian");
 
 // ============================================================
 // 默认配置
@@ -94,6 +94,15 @@ class AutoWebpImageManager extends Plugin {
       name: "批量重命名所有笔记中的图片",
       callback: () => {
         this.renameAllNotesImages();
+      }
+    });
+
+    // 注册命令：扫描未使用和重复的图片
+    this.addCommand({
+      id: "scan-unused-and-duplicate-images",
+      name: "扫描未使用和重复的图片",
+      callback: () => {
+        this.scanUnusedAndDuplicateImages();
       }
     });
 
@@ -779,6 +788,331 @@ class AutoWebpImageManager extends Plugin {
     }
 
     return links;
+  }
+  // ============================================================
+  // 命令：扫描未使用和重复的图片
+  // ============================================================
+  async scanUnusedAndDuplicateImages() {
+    new Notice("正在扫描图片，请稍候...");
+
+    // 1. 获取所有图片文件
+    const imageExts = ["webp", "jpg", "jpeg", "png", "gif", "bmp", "svg", "avif", "ico", "tiff"];
+    const allImages = this.app.vault.getFiles().filter((f) =>
+      imageExts.includes(f.extension.toLowerCase())
+    );
+
+    if (allImages.length === 0) {
+      new Notice("库中没有找到图片文件");
+      return;
+    }
+
+    // 2. 扫描所有笔记，收集被引用的图片
+    const allMdFiles = this.app.vault.getFiles().filter((f) => f.extension === "md");
+    const referencedNames = new Set();
+    const referencedPaths = new Set();
+
+    for (const mdFile of allMdFiles) {
+      try {
+        const content = await this.app.vault.read(mdFile);
+        const links = this.extractImageLinks(content);
+        for (const link of links) {
+          referencedPaths.add(link.path);
+          // 提取文件名部分
+          const fileName = link.path.split("/").pop().split("\\").pop();
+          referencedNames.add(fileName);
+        }
+      } catch (e) {
+        // 跳过
+      }
+    }
+
+    // 3. 检测未使用的图片
+    const unusedImages = [];
+    for (const img of allImages) {
+      const isReferencedByName = referencedNames.has(img.name);
+      const isReferencedByPath = referencedPaths.has(img.path);
+      // 也检查不带扩展名的引用（wikilink可能不带扩展名）
+      const nameWithoutExt = img.name.replace(/\.[^.]+$/, "");
+      const isReferencedByNameNoExt = referencedNames.has(nameWithoutExt);
+
+      if (!isReferencedByName && !isReferencedByPath && !isReferencedByNameNoExt) {
+        unusedImages.push(img);
+      }
+    }
+
+    // 4. 检测重复图片（按文件大小分组，再计算哈希）
+    const sizeGroups = {};
+    for (const img of allImages) {
+      if (!sizeGroups[img.stat.size]) sizeGroups[img.stat.size] = [];
+      sizeGroups[img.stat.size].push(img);
+    }
+
+    const duplicateGroups = [];
+    for (const size of Object.keys(sizeGroups)) {
+      const group = sizeGroups[size];
+      if (group.length < 2) continue;
+
+      // 计算每个文件的哈希
+      const hashMap = {};
+      for (const img of group) {
+        try {
+          const buffer = await this.app.vault.readBinary(img);
+          const hash = await this.computeHash(buffer);
+          if (!hashMap[hash]) hashMap[hash] = [];
+          hashMap[hash].push(img);
+        } catch (e) {
+          // 跳过
+        }
+      }
+
+      for (const hash of Object.keys(hashMap)) {
+        if (hashMap[hash].length > 1) {
+          duplicateGroups.push(hashMap[hash]);
+        }
+      }
+    }
+
+    // 5. 弹出模态框展示结果
+    const modal = new ImageScanModal(this.app, this, unusedImages, duplicateGroups);
+    modal.open();
+  }
+
+  // ============================================================
+  // 辅助：计算二进制内容的简单哈希（用字符串拼接模拟）
+  // ============================================================
+  async computeHash(buffer) {
+    // 用前1000字节 + 后1000字节 + 总长度 作为简单哈希
+    // 对于图片去重足够准确，且速度快
+    const bytes = new Uint8Array(buffer);
+    const len = bytes.length;
+    let hash = len.toString() + "_";
+
+    const sampleSize = Math.min(500, len);
+    for (let i = 0; i < sampleSize; i++) {
+      hash += bytes[i].toString(16).padStart(2, "0");
+    }
+    if (len > sampleSize) {
+      hash += "_";
+      for (let i = len - sampleSize; i < len; i++) {
+        hash += bytes[i].toString(16).padStart(2, "0");
+      }
+    }
+    return hash;
+  }
+}
+
+
+class ImageScanModal extends Modal {
+  constructor(app, plugin, unusedImages, duplicateGroups) {
+    super(app);
+    this.plugin = plugin;
+    this.unusedImages = unusedImages;
+    this.duplicateGroups = duplicateGroups;
+    this.selectedForDelete = new Set();
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.style.maxWidth = "800px";
+    contentEl.style.maxHeight = "80vh";
+    contentEl.style.overflow = "auto";
+
+    contentEl.createEl("h2", { text: "图片扫描结果" });
+
+    // 统计信息
+    const stats = contentEl.createEl("div", { cls: "image-scan-stats" });
+    stats.style.marginBottom = "16px";
+    stats.style.padding = "12px";
+    stats.style.background = "var(--background-secondary)";
+    stats.style.borderRadius = "6px";
+    stats.innerHTML = `
+      <p>未使用的图片：<b>${this.unusedImages.length}</b> 张</p>
+      <p>重复的图片组：<b>${this.duplicateGroups.length}</b> 组（共 ${this.duplicateGroups.reduce((s, g) => s + g.length, 0)} 张）</p>
+      <p style="color: var(--text-muted); font-size: 12px;">勾选要删除的图片，点击底部按钮删除（移到系统回收站，可恢复）</p>
+    `;
+
+    // 未使用的图片
+    if (this.unusedImages.length > 0) {
+      contentEl.createEl("h3", { text: "未使用的图片（未被任何笔记引用）" });
+      const unusedContainer = contentEl.createEl("div", { cls: "image-list" });
+      unusedContainer.style.marginBottom = "20px";
+
+      // 全选/取消全选
+      const selectAllDiv = unusedContainer.createEl("div");
+      selectAllDiv.style.marginBottom = "8px";
+      const selectAllBtn = selectAllDiv.createEl("button", { text: "全选" });
+      selectAllBtn.style.marginRight = "8px";
+      selectAllBtn.onclick = () => {
+        this.unusedImages.forEach((img) => this.selectedForDelete.add(img.path));
+        this.refreshCheckboxes();
+      };
+      const deselectAllBtn = selectAllDiv.createEl("button", { text: "取消全选" });
+      deselectAllBtn.onclick = () => {
+        this.unusedImages.forEach((img) => this.selectedForDelete.delete(img.path));
+        this.refreshCheckboxes();
+      };
+
+      this.unusedImages.forEach((img) => {
+        const item = this.createImageItem(unusedContainer, img, "unused");
+      });
+    }
+
+    // 重复的图片
+    if (this.duplicateGroups.length > 0) {
+      contentEl.createEl("h3", { text: "重复的图片（内容完全相同）" });
+      const dupContainer = contentEl.createEl("div", { cls: "duplicate-list" });
+      dupContainer.style.marginBottom = "20px";
+
+      this.duplicateGroups.forEach((group, groupIdx) => {
+        const groupDiv = dupContainer.createEl("div", { cls: "duplicate-group" });
+        groupDiv.style.marginBottom = "16px";
+        groupDiv.style.padding = "10px";
+        groupDiv.style.border = "1px solid var(--background-modifier-border)";
+        groupDiv.style.borderRadius = "6px";
+
+        const groupTitle = groupDiv.createEl("div", { text: `第 ${groupIdx + 1} 组（${group.length} 张内容相同）` });
+        groupTitle.style.fontWeight = "bold";
+        groupTitle.style.marginBottom = "8px";
+
+        // 保留第一张，标记其他为可删除
+        group.forEach((img, idx) => {
+          const item = this.createImageItem(groupDiv, img, "duplicate", idx === 0);
+        });
+      });
+    }
+
+    if (this.unusedImages.length === 0 && this.duplicateGroups.length === 0) {
+      contentEl.createEl("p", { text: "没有找到未使用或重复的图片，你的库很干净！", cls: "empty-result" });
+    }
+
+    // 底部操作按钮
+    const footer = contentEl.createEl("div", { cls: "modal-footer" });
+    footer.style.marginTop = "20px";
+    footer.style.paddingTop = "16px";
+    footer.style.borderTop = "1px solid var(--background-modifier-border)";
+    footer.style.display = "flex";
+    footer.style.justifyContent = "space-between";
+    footer.style.alignItems = "center";
+
+    const countSpan = footer.createEl("span", { text: "已选择 0 张" });
+    countSpan.id = "selected-count";
+
+    const btnGroup = footer.createEl("div");
+    const cancelBtn = btnGroup.createEl("button", { text: "关闭" });
+    cancelBtn.style.marginRight = "8px";
+    cancelBtn.onclick = () => this.close();
+
+    const deleteBtn = btnGroup.createEl("button", { text: "删除选中的图片" });
+    deleteBtn.style.background = "var(--interactive-normal)";
+    deleteBtn.onclick = () => this.deleteSelected();
+  }
+
+  createImageItem(container, img, type, isOriginal = false) {
+    const item = container.createEl("div", { cls: "image-item" });
+    item.style.display = "flex";
+    item.style.alignItems = "center";
+    item.style.padding = "4px 0";
+    item.style.gap = "8px";
+
+    const checkbox = item.createEl("input", { type: "checkbox" });
+    checkbox.dataset.path = img.path;
+    checkbox.checked = this.selectedForDelete.has(img.path);
+    if (isOriginal) {
+      checkbox.disabled = true;
+      checkbox.title = "每组保留第一张，不建议删除";
+    }
+    checkbox.onchange = () => {
+      if (checkbox.checked) {
+        this.selectedForDelete.add(img.path);
+      } else {
+        this.selectedForDelete.delete(img.path);
+      }
+      this.updateCount();
+    };
+
+    const nameSpan = item.createEl("span", { text: img.name });
+    nameSpan.style.flex = "1";
+    nameSpan.style.overflow = "hidden";
+    nameSpan.style.textOverflow = "ellipsis";
+    nameSpan.style.whiteSpace = "nowrap";
+
+    const pathSpan = item.createEl("span", { text: img.path });
+    pathSpan.style.color = "var(--text-muted)";
+    pathSpan.style.fontSize = "12px";
+    pathSpan.style.maxWidth = "200px";
+    pathSpan.style.overflow = "hidden";
+    pathSpan.style.textOverflow = "ellipsis";
+    pathSpan.style.whiteSpace = "nowrap";
+
+    const sizeSpan = item.createEl("span", { text: this.formatSize(img.stat.size) });
+    sizeSpan.style.color = "var(--text-muted)";
+    sizeSpan.style.fontSize = "12px";
+    sizeSpan.style.minWidth = "60px";
+    sizeSpan.style.textAlign = "right";
+
+    if (isOriginal) {
+      const tag = item.createEl("span", { text: "保留" });
+      tag.style.color = "var(--text-success)";
+      tag.style.fontSize = "11px";
+      tag.style.padding = "2px 6px";
+      tag.style.background = "var(--background-modifier-success)";
+      tag.style.borderRadius = "3px";
+    }
+
+    return item;
+  }
+
+  refreshCheckboxes() {
+    this.containerEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+      if (!cb.disabled) {
+        cb.checked = this.selectedForDelete.has(cb.dataset.path);
+      }
+    });
+    this.updateCount();
+  }
+
+  updateCount() {
+    const countEl = document.getElementById("selected-count");
+    if (countEl) countEl.textContent = `已选择 ${this.selectedForDelete.size} 张`;
+  }
+
+  formatSize(bytes) {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  async deleteSelected() {
+    if (this.selectedForDelete.size === 0) {
+      new Notice("请先选择要删除的图片");
+      return;
+    }
+
+    const confirmMsg = `确定要删除选中的 ${this.selectedForDelete.size} 张图片吗？\n（将移到系统回收站，可恢复）`;
+    // 简单确认：直接执行
+    let deleted = 0;
+    let failed = 0;
+
+    for (const path of this.selectedForDelete) {
+      try {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (file) {
+          await this.app.vault.trash(file, true); // 移到系统回收站
+          deleted++;
+        }
+      } catch (err) {
+        console.error("[Auto WebP] 删除图片失败:", path, err);
+        failed++;
+      }
+    }
+
+    new Notice(`已删除 ${deleted} 张图片${failed > 0 ? "，" + failed + " 张失败" : ""}`);
+    this.close();
+  }
+
+  onClose() {
+    this.contentEl.empty();
   }
 }
 
