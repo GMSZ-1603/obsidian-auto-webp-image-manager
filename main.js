@@ -609,18 +609,21 @@ class AutoWebpImageManager extends Plugin {
     console.log("[Auto WebP] 找到", affectedFiles.length, "篇引用这些图片的笔记");
 
     // 8. 执行处理：webp直接重命名，非webp转换后保存
+    const newFileMap = {}; // oldName -> new TFile
     for (const item of renamePlan) {
       try {
         if (item.isWebp) {
-          // 已经是webp，直接重命名
+          // 已经是webp，直接重命名（Obsidian会自动更新wikilink引用）
           await this.app.vault.rename(item.oldFile, item.newPath);
+          const newFile = this.app.vault.getAbstractFileByPath(item.newPath);
+          if (newFile) newFileMap[item.oldName] = newFile;
         } else {
           // 非webp，转换为webp后保存
           const arrayBuffer = await this.app.vault.readBinary(item.oldFile);
           const blob = new Blob([arrayBuffer]);
           const webpBuffer = await this.convertToWebp(blob);
-          await this.app.vault.createBinary(item.newPath, webpBuffer);
-          // 原文件保留，不删除（避免其他笔记引用断裂）
+          const newFile = await this.app.vault.createBinary(item.newPath, webpBuffer);
+          newFileMap[item.oldName] = newFile;
           console.log("[Auto WebP] 已转换为webp:", item.oldName, "->", item.newFileName);
         }
       } catch (err) {
@@ -629,21 +632,36 @@ class AutoWebpImageManager extends Plugin {
     }
 
     // 等待Obsidian完成自动链接更新
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 500));
 
-    // 9. 更新所有受影响笔记中的链接
+    // 9. 更新所有受影响笔记中的链接（替换完整链接，确保路径正确）
     let updatedCount = 0;
     for (const mdFile of affectedFiles) {
       try {
         await this.app.vault.process(mdFile, (content) => {
           let newContent = content;
           let changed = false;
+
+          // 替换 wikilink 格式: ![[旧路径]] -> ![[新文件名.webp]]
           for (const item of renamePlan) {
-            if (newContent.includes(item.oldName)) {
-              newContent = newContent.split(item.oldName).join(item.newFileName);
-              changed = true;
-            }
+            const newFile = newFileMap[item.oldName];
+            if (!newFile) continue;
+
+            // 匹配 ![[旧路径或旧文件名]] （可能带别名）
+            const oldPathEscaped = escapeRegex(item.oldPath);
+            const oldNameEscaped = escapeRegex(item.oldName);
+            const wikilinkRegex = new RegExp("!\\[\\[[^\\]|]*?" + oldNameEscaped + "(?:\\|[^\\]]*)?\\]\\]", "g");
+            newContent = newContent.replace(wikilinkRegex, "![[" + newFile.name + "]]");
+
+            // 匹配 markdown 格式: ![alt](旧路径) -> 生成正确的markdown链接
+            const markdownRegex = new RegExp("!\\[([^\\]]*)\\]\\([^)]*?" + oldNameEscaped + "\\)", "g");
+            newContent = newContent.replace(markdownRegex, (match, alt) => {
+              return "!" + this.app.fileManager.generateMarkdownLink(newFile, mdFile.path, alt);
+            });
+
+            changed = true;
           }
+
           if (changed) updatedCount++;
           return changed ? newContent : content;
         });
@@ -652,7 +670,26 @@ class AutoWebpImageManager extends Plugin {
       }
     }
 
-    new Notice("已处理 " + renamePlan.length + " 张图片，更新 " + updatedCount + " 篇笔记");
+    // 10. 删除非webp的原文件（转换成功且所有引用已更新后）
+    let deletedCount = 0;
+    for (const item of renamePlan) {
+      if (!item.isWebp && newFileMap[item.oldName]) {
+        try {
+          await this.app.vault.trash(item.oldFile, true); // 移到系统回收站
+          deletedCount++;
+          console.log("[Auto WebP] 已删除原文件:", item.oldPath);
+        } catch (err) {
+          console.error("[Auto WebP] 删除原文件失败:", item.oldPath, err);
+        }
+      }
+    }
+
+    const msg = "已处理 " + renamePlan.length + " 张图片，更新 " + updatedCount + " 篇笔记";
+    if (deletedCount > 0) {
+      new Notice(msg + "，删除 " + deletedCount + " 个原文件");
+    } else {
+      new Notice(msg);
+    }
     console.log("[Auto WebP] 批量重命名完成:", renamePlan.length, "张图片");
   }
 
