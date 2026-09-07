@@ -325,8 +325,17 @@ class AutoWebpImageManager extends Plugin {
       linkText = "![[" + imageFile.name + "]]";
     }
 
-    // 在光标位置插入，后面加换行
-    editor.replaceSelection(linkText);
+    // 获取当前行的缩进（空白字符）
+    const cursor = editor.getCursor();
+    const lineText = editor.getLine(cursor.line);
+    const indentMatch = lineText.match(/^(\s*)/);
+    const indent = indentMatch ? indentMatch[1] : "";
+
+    // 插入图片链接 + 换行 + 空行（带缩进）+ 新行（带缩进）
+    editor.replaceSelection(linkText + "\n" + indent + "\n" + indent);
+
+    // 光标定位到最后一行的缩进后
+    editor.setCursor({ line: cursor.line + 2, ch: indent.length });
   }
 
   // ============================================================
