@@ -1,4 +1,4 @@
-# Auto WebP Image Manager
+# 图片自动处理 / Auto WebP Image Manager
 
 Automatically convert pasted/dragged images to WebP format, save them to a custom folder with note-based naming, sync image renames when notes are renamed, batch rename images across all notes, and scan for unused/duplicate images.
 
